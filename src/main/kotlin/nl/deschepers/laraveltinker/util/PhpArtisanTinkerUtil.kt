@@ -52,10 +52,10 @@ class PhpArtisanTinkerUtil(private val project: Project, private val phpCode: St
             return
         }
 
-        var laravelRoot =
-            ComposerUtils.findFileInProject(project, ComposerUtils.CONFIG_DEFAULT_FILENAME)
-                .parent
-                .path
+        // Find the project root (directory containing composer.json)
+        val composerFile = ComposerUtils.findFileInProject(project, ComposerUtils.CONFIG_DEFAULT_FILENAME)
+        val projectRoot = composerFile.parent.path
+        var laravelRoot = projectRoot
 
         // If the user has set a custom path, use that instead
         if (projectSettings.laravelRoot.isNotEmpty()) {
@@ -68,21 +68,27 @@ class PhpArtisanTinkerUtil(private val project: Project, private val phpCode: St
             }
         }
 
-        // Check if the vendor path exists
-        var vendorPath = projectSettings.vendorRoot.ifEmpty { laravelRoot }
-        if (!vendorPath.endsWith("/vendor")) {
-            vendorPath = "$vendorPath/vendor"
-        }
-        val vendorDir = File(vendorPath)
+        // Check if the vendor path exists (but do not set vendorRoot to include /vendor)
+        val vendorDir = File(laravelRoot, "vendor")
         if (!vendorDir.exists() || !vendorDir.isDirectory) {
-            VendorFolderNotFound(project, vendorPath).show()
+            VendorFolderNotFound(project, vendorDir.path).show()
             return
         }
 
+        // Always set laravelRoot and vendorRoot to the project root (not vendor dir)
+        projectSettings.laravelRoot = laravelRoot
+        projectSettings.vendorRoot = laravelRoot
+
         val inputStream = javaClass.classLoader.getResourceAsStream("scripts/tinker_run.php")
-        val phpTinkerCodeRunnerCode =
-            BufferedReader(InputStreamReader(inputStream!!, StandardCharsets.UTF_8)).lines()
-                .collect(Collectors.joining("\n"))
+        // Write tinker_run.php to a temporary file so it can be executed by PHP (required for Xdebug)
+        val tempTinkerScript = File.createTempFile("tinker_run", ".php")
+        tempTinkerScript.deleteOnExit()
+        inputStream!!.use { input ->
+            tempTinkerScript.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        val tinkerScriptPath = tempTinkerScript.absolutePath
         val phpCommandSettings: PhpCommandSettings
         val processHandler: ProcessHandler
 
@@ -96,7 +102,8 @@ class PhpArtisanTinkerUtil(private val project: Project, private val phpCode: St
             )
 
             val tinkerRunSettings = projectSettings.parseJson()
-            phpCommandSettings.addArguments(listOf("-r", phpTinkerCodeRunnerCode, phpCode, tinkerRunSettings.toString()))
+            // Instead of -r, pass the script file path and arguments
+            phpCommandSettings.addArguments(listOf(tinkerScriptPath, phpCode, tinkerRunSettings.toString()))
 
             processHandler = getAnsiUnfilteredProcessHandler(runConfiguration.createProcessHandler(project, phpCommandSettings))
 
